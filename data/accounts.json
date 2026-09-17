@@ -1,0 +1,23 @@
+{
+  "next_uid": 10000004,
+  "accounts": {
+    "restlycames": {
+      "uid": 10000001,
+      "username": "restlycames",
+      "password_hash": "ef797c8118f02dfb649607dd5d3f8c7623048c9c063d532cc95c5ed7a898a64f",
+      "token": "42908799f932bc45ec805dc41fe9e9dd5021cd063cbbd085afe195275a700dcc"
+    },
+    "кукцыва": {
+      "uid": 10000002,
+      "username": "кукцыва",
+      "password_hash": "b9637f572f97583d721488a8d202301b3bc95decf34e7bda4302b777031c9879",
+      "token": "e794085dbb4530fdb91f5abc0e5aca1cd33a1dcd05b61c067985ea80bf3b8326"
+    },
+    "123123": {
+      "uid": 10000003,
+      "username": "123123",
+      "password_hash": "8c3d79bf157bf305b1be88c66fac3c40d7c44a11dd51c27c3a2c49fab02ae52b",
+      "token": "91ca1126d6ecf11eddbc39720fbae1806e9b1182c130a0e458a6fc7dcadb59cd"
+    }
+  }
+}
