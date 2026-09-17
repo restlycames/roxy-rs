@@ -1,9 +1,19 @@
-use base64::{engine::general_purpose::STANDARD, Engine};
-use rsa::{BigUint, Pkcs1v15Encrypt, RsaPrivateKey};
+use base64::{
+    engine::general_purpose::STANDARD,
+    Engine,
+};
+use rand::{thread_rng, RngCore};
+use rsa::{
+    BigUint,
+    Pkcs1v15Encrypt,
+    RsaPrivateKey,
+};
+use sha2::{Digest, Sha256};
 
 pub const BLOCK_SIZE: usize = 128;
+pub const MAX_UNPADDED_SIZE: usize = BLOCK_SIZE - 11;
 
-const MODULUS: [u8; BLOCK_SIZE] = [
+const SERVER_MODULUS: [u8; BLOCK_SIZE] = [
     0x7c, 0x01, 0x67, 0x63, 0xf5, 0x2f, 0x97, 0xbd,
     0x43, 0x7d, 0x8e, 0xa8, 0x56, 0x72, 0xa8, 0x2c,
     0xe3, 0x75, 0xb3, 0x5e, 0x14, 0x89, 0x19, 0x42,
@@ -41,13 +51,164 @@ const PRIVATE_EXPONENT: [u8; BLOCK_SIZE] = [
     0xdd, 0xe9, 0xaa, 0xa5, 0x39, 0x2f, 0xed, 0xa1,
 ];
 
+const CLIENT_MODULUS: [u8; BLOCK_SIZE] = [
+    0xae, 0x44, 0x28, 0x0a, 0xd1, 0x92, 0xe5, 0x84,
+    0xab, 0xcf, 0x19, 0xbc, 0xf5, 0x6a, 0xb7, 0x19,
+    0x24, 0x7f, 0xbb, 0x0e, 0x40, 0x24, 0x3c, 0x06,
+    0xaa, 0xef, 0xad, 0x91, 0x75, 0x62, 0x67, 0x03,
+    0x85, 0xf0, 0x7e, 0xb1, 0x80, 0xbe, 0xca, 0x3e,
+    0x2d, 0x8e, 0x54, 0x04, 0xc7, 0x0a, 0x86, 0x8d,
+    0x14, 0xb4, 0xc0, 0x0f, 0x99, 0xe5, 0x2d, 0x28,
+    0xe0, 0xd2, 0x91, 0xc4, 0x02, 0xa1, 0xda, 0x7e,
+    0xf5, 0xed, 0xce, 0x3e, 0x06, 0x87, 0xcb, 0x6f,
+    0x17, 0x60, 0x3a, 0xff, 0xcc, 0x81, 0xe5, 0xc7,
+    0x93, 0xdc, 0xeb, 0x33, 0xa3, 0xd5, 0x11, 0xe5,
+    0xde, 0xe1, 0xb0, 0x8e, 0x79, 0xb3, 0x16, 0xf7,
+    0xed, 0x05, 0x29, 0x40, 0xb1, 0xd8, 0xa3, 0x12,
+    0xac, 0xef, 0xd1, 0x68, 0x84, 0x9e, 0xf8, 0x67,
+    0x95, 0x76, 0x2e, 0x04, 0x98, 0xfb, 0x45, 0xef,
+    0x6c, 0x6c, 0x4c, 0x1f, 0x18, 0x71, 0x1d, 0x37,
+];
+
+const SHA256_DIGEST_INFO: [u8; 19] = [
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09,
+    0x60, 0x86, 0x48, 0x01, 0x65, 0x03,
+    0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20,
+];
+
 pub fn private_key() -> RsaPrivateKey {
-    let n = BigUint::from_bytes_be(&MODULUS);
+    let n = BigUint::from_bytes_be(&SERVER_MODULUS);
     let e = BigUint::from(65537u32);
     let d = BigUint::from_bytes_be(&PRIVATE_EXPONENT);
 
     RsaPrivateKey::from_components(n, e, d, Vec::new())
         .expect("failed to create Roxy RSA private key")
+}
+
+fn rsa_encrypt_block(
+    data: &[u8],
+) -> Result<[u8; BLOCK_SIZE], Box<dyn std::error::Error>> {
+    if data.len() > MAX_UNPADDED_SIZE {
+        return Err(format!(
+            "RSA plaintext block too large: {} bytes, max {}",
+            data.len(),
+            MAX_UNPADDED_SIZE
+        ).into());
+    }
+
+    let modulus = BigUint::from_bytes_be(&CLIENT_MODULUS);
+    let exponent = BigUint::from(65537u32);
+
+    let mut encoded = [0u8; BLOCK_SIZE];
+
+    encoded[0] = 0x00;
+    encoded[1] = 0x02;
+
+    let padding_len = BLOCK_SIZE - data.len() - 3;
+
+    let mut rng = thread_rng();
+
+    let padding = &mut encoded[2..2 + padding_len];
+
+    loop {
+        rng.fill_bytes(padding);
+
+        if padding.iter().all(|byte| *byte != 0) {
+            break;
+        }
+    }
+
+    encoded[2 + padding_len] = 0x00;
+
+    encoded[3 + padding_len..].copy_from_slice(data);
+
+    let value = BigUint::from_bytes_be(&encoded);
+    let encrypted = value.modpow(&exponent, &modulus);
+
+    let bytes = encrypted.to_bytes_be();
+
+    let mut output = [0u8; BLOCK_SIZE];
+
+    if bytes.len() > BLOCK_SIZE {
+        return Err("RSA ciphertext is larger than block size".into());
+    }
+
+    output[BLOCK_SIZE - bytes.len()..].copy_from_slice(&bytes);
+
+    Ok(output)
+}
+
+fn rsa_sign(
+    data: &[u8],
+) -> Result<[u8; BLOCK_SIZE], Box<dyn std::error::Error>> {
+    let digest = Sha256::digest(data);
+
+    let mut encoded = [0u8; BLOCK_SIZE];
+
+    encoded[0] = 0x00;
+    encoded[1] = 0x01;
+
+    let padding_len =
+        BLOCK_SIZE - SHA256_DIGEST_INFO.len() - digest.len() - 3;
+
+    for byte in &mut encoded[2..2 + padding_len] {
+        *byte = 0xff;
+    }
+
+    let offset = 2 + padding_len;
+
+    encoded[offset] = 0x00;
+
+    let digest_info_start = offset + 1;
+
+    encoded[
+        digest_info_start
+            ..digest_info_start + SHA256_DIGEST_INFO.len()
+    ]
+        .copy_from_slice(&SHA256_DIGEST_INFO);
+
+    let digest_start =
+        digest_info_start + SHA256_DIGEST_INFO.len();
+
+    encoded[digest_start..].copy_from_slice(&digest);
+
+    let modulus = BigUint::from_bytes_be(&SERVER_MODULUS);
+    let exponent = BigUint::from_bytes_be(&PRIVATE_EXPONENT);
+
+    let value = BigUint::from_bytes_be(&encoded);
+    let signature = value.modpow(&exponent, &modulus);
+
+    let bytes = signature.to_bytes_be();
+
+    let mut output = [0u8; BLOCK_SIZE];
+
+    if bytes.len() > BLOCK_SIZE {
+        return Err("RSA signature is larger than block size".into());
+    }
+
+    output[BLOCK_SIZE - bytes.len()..].copy_from_slice(&bytes);
+
+    Ok(output)
+}
+
+pub fn encrypt_gateway(
+    plaintext: &str,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let bytes = plaintext.as_bytes();
+
+    let mut encrypted = Vec::new();
+
+    for chunk in bytes.chunks(MAX_UNPADDED_SIZE) {
+        let block = rsa_encrypt_block(chunk)?;
+        encrypted.extend_from_slice(&block);
+    }
+
+    let signature = rsa_sign(bytes)?;
+
+    Ok((
+        STANDARD.encode(encrypted),
+        STANDARD.encode(signature),
+    ))
 }
 
 pub fn decrypt_base64(
@@ -60,8 +221,7 @@ pub fn decrypt_base64(
             "invalid RSA ciphertext size: {} bytes, expected {}",
             ciphertext.len(),
             BLOCK_SIZE
-        )
-        .into());
+        ).into());
     }
 
     let key = private_key();
